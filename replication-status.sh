@@ -18,7 +18,7 @@
 #############
 
 # Set the maximum number of seconds behind master that will be ignored.
-# If the slave is be more than maximumSecondsBehind, an email will be sent.
+# If the slave is more than MAX_SECONDS_BEHIND behind the master, an email will be sent.
 MAX_SECONDS_BEHIND=300
 
 # MySQL login
