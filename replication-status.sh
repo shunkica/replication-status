@@ -42,7 +42,8 @@ ERRFILE=/var/log/replication-status.err
 # Send email with log in attachment
 function send_email() {
   echo "Sending email to ${MAILTO}"
-  printf "An error occured during MariaDB replication on %s:\n\n%s" "${HOSTNAME}" "$(cat $ERRFILE)" | $MAILXCMD -s "MariaDB replication error on $HOSTNAME" -r ${MAILFROM} -S ${SMTPSERVER} -a $ERRFILE ${MAILTO}
+  printf "An error occured during MariaDB replication on %s:\n\n%s" "${HOSTNAME}" "$(cat $ERRFILE)" \
+      | $MAILXCMD -s "MariaDB replication error on $HOSTNAME" -r ${MAILFROM} -S ${SMTPSERVER} -a $ERRFILE ${MAILTO}
 }
 
 {
@@ -60,11 +61,11 @@ function send_email() {
   else
     # mysql is down
     printf "%s\n\n%s" "Error: MySQL seems to be down." "$(systemctl status mysql)" >$ERRFILE
-    mysql_is_down=1
+    mysql_down=1
   fi
 
   # Check for problems and send email if needed
-  if [[ $mysql_is_down == 1 || $slaveRunning != 1 || $slaveSQLRunning != 1 || $secondsBehind -gt $MAX_SECONDS_BEHIND ]]; then
+  if [[ $mysql_down == 1 || $slaveRunning != 1 || $slaveSQLRunning != 1 || $secondsBehind -gt $MAX_SECONDS_BEHIND ]]; then
     cat $ERRFILE
     echo "$(date +%Y%m%d_%H%M%S): Replication check finished. Problems detected."
     send_email
