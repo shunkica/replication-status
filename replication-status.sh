@@ -5,35 +5,39 @@
 ### INSTALLATION ###
 ####################
 
-### Create replication status user in mysql:
+### Create replication status user in the database:
 # CREATE USER 'replstatus'@'localhost' IDENTIFIED BY 'your_password';
 # GRANT SHOW DATABASES, REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'replstatus'@'localhost';
 # FLUSH PRIVILEGES;
 
-### Add to cron to run every 5 minutes
-# */5 * * * * MYSQL_PASSWORD=YourPassword /bin/bash /usr/local/sbin/replication-status.sh
+### Create a cron job to run the script every 5 minutes
+# */5 * * * * DB_PASSWORD=YourPassword /bin/bash /usr/local/sbin/replication-status.sh
 
 #############
 ### SETUP ###
 #############
 
 # Set the maximum number of seconds behind master that will be ignored.
-# If the slave is more than MAX_SECONDS_BEHIND behind the master, an email will be sent.
+# If the slave is be more than maximumSecondsBehind, an email will be sent.
 MAX_SECONDS_BEHIND=300
 
-# MySQL login
-MYSQL_USER=replstatus
-#MYSQL_PASSWORD=your_password
+# Database
+DB_TYPE=mariadb
+DB_USER=replstatus
+#DB_PASSWORD=your_password
 
 # Email
-MAILTO=user1@example.com
-MAILFROM=user2@example.com
-SMTPSERVER=localhost
-MAILXCMD=/bin/mailx
+DISABLE_EMAIL_REPORTS=0 # 1 to disable reports
+MAIL_TO=user1@example.com
+MAIL_FROM=user2@example.com
+SMTP_SERVER=localhost
+MAILX_CMD=/usr/bin/mailx
+MSMTP_CMD=/usr/bin/msmtp
+MAIL_TYPE=mailx # can be 'mailx' or 'msmtp'
 
 # Logs
-LOGFILE=/var/log/replication-status.log
-ERRFILE=/var/log/replication-status.err
+LOG_FILE=/var/log/replication-status.log
+ERR_FILE=/var/log/replication-status.err
 
 #################
 ### END SETUP ###
@@ -41,40 +45,62 @@ ERRFILE=/var/log/replication-status.err
 
 # Send email with log in attachment
 function send_email() {
-  echo "Sending email to ${MAILTO}"
-  printf "An error occured during MariaDB replication on %s:\n\n%s" "${HOSTNAME}" "$(cat $ERRFILE)" \
-      | $MAILXCMD -s "MariaDB replication error on $HOSTNAME" -r ${MAILFROM} -S ${SMTPSERVER} -a $ERRFILE ${MAILTO}
+    if [[ "$DISABLE_EMAIL_REPORTS" -eq 1 ]]; then
+        cat "$ERR_FILE" > /dev/stderr
+        return
+    fi
+
+    echo "Sending email to ${MAIL_TO}"
+
+    SUBJECT="Database replication error on $HOSTNAME"
+    BODY=$(printf "An error occurred during database replication on %s:\n\n%s" "${HOSTNAME}" "$(cat $ERR_FILE)")
+
+    if [[ "$MAIL_TYPE" == "mailx" ]]; then
+        echo "$BODY" | $MAILX_CMD -s "$SUBJECT" -r "$MAIL_FROM" -S smtp="$SMTP_SERVER" -a "$ERR_FILE" "$MAIL_TO"
+    elif [[ "$MAIL_TYPE" == "msmtp" ]]; then
+        {
+            echo "Subject: $SUBJECT"
+            echo "From: $MAIL_FROM"
+            echo "To: $MAIL_TO"
+            echo
+            echo "$BODY"
+        } | $MSMTP_CMD --from="$MAIL_FROM" -t
+    else
+        echo "Unsupported MAIL_TYPE: $MAIL_TYPE" >&2
+    fi
 }
 
+
 {
-  echo "$(date +%Y%m%d_%H%M%S): Replication check started."
+    echo "$(date +%Y%m%d_%H%M%S): Replication check started."
 
-  # Check if MySQL is running
-  if systemctl is-active mysql >/dev/null; then
-    # Get MySQL replication status...
-    mysql -u ${MYSQL_USER} -p"${MYSQL_PASSWORD}" -e 'SHOW SLAVE STATUS \G' | grep 'Running:\|Master:\|Error:' >$ERRFILE
+    # Check if the database is running
+    if systemctl is-active ${DB_TYPE} > /dev/null; then
+        # Get the replication status...
+        ${DB_TYPE} -u ${DB_USER} -p${DB_PASSWORD} -e 'SHOW SLAVE STATUS \G' | grep 'Running:\|Master:\|Error:' >$ERR_FILE
 
-    # Getting parameters
-    slaveRunning="$(grep -c "Slave_IO_Running: Yes" $ERRFILE)"
-    slaveSQLRunning="$(grep -c "Slave_SQL_Running: Yes" $ERRFILE)"
-    secondsBehind="$(grep "Seconds_Behind_Master" $ERRFILE | tr -dc '0-9')"
-  else
-    # mysql is down
-    printf "%s\n\n%s" "Error: MySQL seems to be down." "$(systemctl status mysql)" >$ERRFILE
-    mysql_down=1
-  fi
+        # Getting parameters
+        slaveRunning="$(grep -c "Slave_IO_Running: Yes" $ERR_FILE)"
+        slaveSQLRunning="$(grep -c "Slave_SQL_Running: Yes" $ERR_FILE)"
+        secondsBehind="$(grep "Seconds_Behind_Master" $ERR_FILE | tr -dc '0-9')"
+        dbNotRunning=0
+    else
+        # The database is not running
+        printf "%s\n\n%s" "Error: ${DB_TYPE} is not running." "$(systemctl status ${DB_TYPE})" >$ERR_FILE
+        dbNotRunning=1
+    fi
 
-  # Check for problems and send email if needed
-  if [[ $mysql_down == 1 || $slaveRunning != 1 || $slaveSQLRunning != 1 || $secondsBehind -gt $MAX_SECONDS_BEHIND ]]; then
-    cat $ERRFILE
-    echo "$(date +%Y%m%d_%H%M%S): Replication check finished. Problems detected."
-    send_email
-    RETVAL=1
-  else
-    echo "$(date +%Y%m%d_%H%M%S): Replication check finished OK."
-    RETVAL=0
-  fi
+    # Check for problems and send email if needed
+    if [[ $dbNotRunning == 1 || $slaveRunning != 1 || $slaveSQLRunning != 1 || $secondsBehind -gt $MAX_SECONDS_BEHIND ]]; then
+        cat $ERR_FILE
+        echo "$(date +%Y%m%d_%H%M%S): Replication check finished. Problems detected."
+        send_email
+        retval=1
+    else
+        echo "$(date +%Y%m%d_%H%M%S): Replication check finished OK."
+        retval=0
+    fi
 
-  sync
-  exit $RETVAL
-} 2>&1 | tee -a ${LOGFILE}
+    sync
+    exit $retval
+} 2>&1 | tee -a ${LOG_FILE}
