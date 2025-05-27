@@ -46,7 +46,6 @@ ERR_FILE=/var/log/replication-status.err
 # Send email with log in attachment
 function send_email() {
     if [[ "$DISABLE_EMAIL_REPORTS" -eq 1 ]]; then
-        cat "$ERR_FILE" > /dev/stderr
         return
     fi
 
